@@ -5,6 +5,16 @@ from pathlib import Path
 from statistics import mean
 from .schemas import ReportPayload, RunRecord
 
+IMPLEMENTED_EXTENSIONS = [
+    "structured_evaluator",
+    "reflection_memory",
+    "benchmark_report_json",
+    "mock_mode_for_autograding",
+    "adaptive_max_attempts",
+    "memory_compression",
+    "plan_then_execute",
+]
+
 def summarize(records: list[RunRecord]) -> dict:
     grouped: dict[str, list[RunRecord]] = defaultdict(list)
     for record in records:
@@ -18,13 +28,75 @@ def summarize(records: list[RunRecord]) -> dict:
 
 def failure_breakdown(records: list[RunRecord]) -> dict:
     grouped: dict[str, Counter] = defaultdict(Counter)
+    overall = Counter()
     for record in records:
         grouped[record.agent_type][record.failure_mode] += 1
-    return {agent: dict(counter) for agent, counter in grouped.items()}
+        overall[record.failure_mode] += 1
+    breakdown = {agent: dict(counter) for agent, counter in grouped.items()}
+    breakdown["overall"] = dict(overall)
+    return breakdown
 
-def build_report(records: list[RunRecord], dataset_name: str, mode: str = "mock") -> ReportPayload:
-    examples = [{"qid": r.qid, "agent_type": r.agent_type, "gold_answer": r.gold_answer, "predicted_answer": r.predicted_answer, "is_correct": r.is_correct, "attempts": r.attempts, "failure_mode": r.failure_mode, "reflection_count": len(r.reflections)} for r in records]
-    return ReportPayload(meta={"dataset": dataset_name, "mode": mode, "num_records": len(records), "agents": sorted({r.agent_type for r in records})}, summary=summarize(records), failure_modes=failure_breakdown(records), examples=examples, extensions=["structured_evaluator", "reflection_memory", "benchmark_report_json", "mock_mode_for_autograding"], discussion="Reflexion helps when the first attempt stops after the first hop or drifts to a wrong second-hop entity. The tradeoff is higher attempts, token cost, and latency. In a real report, students should explain when the reflection memory was useful, which failure modes remained, and whether evaluator quality limited gains.")
+def build_report(
+    records: list[RunRecord],
+    dataset_name: str,
+    mode: str = "mock",
+    extensions: list[str] | None = None,
+) -> ReportPayload:
+    examples: list[dict] = []
+    for record in records:
+        examples.append(
+            {
+                "level": "run",
+                "qid": record.qid,
+                "agent_type": record.agent_type,
+                "gold_answer": record.gold_answer,
+                "predicted_answer": record.predicted_answer,
+                "is_correct": record.is_correct,
+                "attempts": record.attempts,
+                "failure_mode": record.failure_mode,
+                "reflection_count": len(record.reflections),
+                "latest_reflection": record.reflections[-1].model_dump() if record.reflections else None,
+                "last_trace": record.traces[-1].model_dump() if record.traces else None,
+            }
+        )
+        for trace in record.traces:
+            examples.append(
+                {
+                    "level": "trace",
+                    "qid": record.qid,
+                    "agent_type": record.agent_type,
+                    "attempt_id": trace.attempt_id,
+                    "answer": trace.answer,
+                    "score": trace.score,
+                    "reason": trace.reason,
+                    "reflection_present": trace.reflection is not None,
+                    "token_estimate": trace.token_estimate,
+                    "latency_ms": trace.latency_ms,
+                }
+            )
+    discussion = (
+        "Reflexion outperforms a single-pass ReAct baseline when the first attempt fails because it stops one hop "
+        "too early or commits to the wrong entity after an incomplete chain of evidence. The implemented scaffold "
+        "now makes that loop explicit through a structured evaluator, persistent reflection memory, adaptive attempt "
+        "budgets by difficulty, compressed memory to avoid unbounded context growth, and a plan-then-execute step "
+        "that nudges the actor to verify the second hop before answering. These gains come with a predictable tradeoff: "
+        "more total calls, higher token usage, and higher latency. In a real benchmark, the most useful follow-up "
+        "analysis would compare which failure modes remain after reflection, whether compressed memory preserves the "
+        "right lessons, and whether evaluator quality becomes the bottleneck once the actor improves."
+    )
+    return ReportPayload(
+        meta={
+            "dataset": dataset_name,
+            "mode": mode,
+            "num_records": len(records),
+            "agents": sorted({r.agent_type for r in records}),
+        },
+        summary=summarize(records),
+        failure_modes=failure_breakdown(records),
+        examples=examples,
+        extensions=extensions or IMPLEMENTED_EXTENSIONS,
+        discussion=discussion,
+    )
 
 def save_report(report: ReportPayload, out_dir: str | Path) -> tuple[Path, Path]:
     out_dir = Path(out_dir)

@@ -20,11 +20,12 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Chạy benchmark (với mock data)
-python run_benchmark.py --dataset data/hotpot_mini.json --out-dir outputs/sample_run
+# Chạy benchmark
+# data/hotpot_mini.json hiện đã chứa 100 mẫu benchmark với đủ easy/medium/hard
+python run_benchmark.py --dataset data/hotpot_mini.json --out-dir outputs/run
 
 # Chạy chấm điểm tự động
-python autograde.py --report-path outputs/sample_run/report.json
+python autograde.py --report-path outputs/run/report.json
 ```
 
 ## 4. Tiêu chí chấm điểm (Rubric)
